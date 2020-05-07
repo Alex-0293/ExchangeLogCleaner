@@ -1,0 +1,6 @@
+ACL/Access.csv
+ACL/Owner.csv
+ACL/Roles.csv
+LOGS/Errors.log
+LOGS/ExchangeLogCleaner.log
+SETTINGS/Settings.ps1
