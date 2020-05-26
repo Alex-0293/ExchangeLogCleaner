@@ -7,20 +7,22 @@
     .PARAMETER
     .EXAMPLE
 #>
-Clear-Host
-$Global:ScriptName = $MyInvocation.MyCommand.Name
+
+$Global:ScriptInvocation = $MyInvocation
 $InitScript        = "C:\DATA\Projects\GlobalSettings\SCRIPTS\Init.ps1"
-if (. "$InitScript" -MyScriptRoot (Split-Path $PSCommandPath -Parent)) { exit 1 }
+. "$InitScript" -MyScriptRoot (Split-Path $PSCommandPath -Parent)
+if ($LastExitCode) { exit 1 }
 
 # Error trap
 trap {
-    if ($Global:Logger) {
-       Get-ErrorReporting $_
-        . "$GlobalSettings\$SCRIPTSFolder\Finish.ps1"  
+    if (get-module -FullyQualifiedName AlexkUtils) {
+        Get-ErrorReporting $_        
+        . "$GlobalSettings\$SCRIPTSFolder\Finish.ps1" 
     }
     Else {
-        Write-Host "There is error before logging initialized." -ForegroundColor Red
-    }
+        Write-Host "[$($MyInvocation.MyCommand.path)] There is error before logging initialized. Error: $_" -ForegroundColor Red
+    }  
+    $Global:GlobalSettingsSuccessfullyLoaded = $false
     exit 1
 }
 ################################# Script start here #################################
@@ -36,15 +38,9 @@ $Scriptblock = {
             [int16] $DaysToSave
         )        
         $LastPref = $Global:ErrorActionPreference
-        $Global:ErrorActionPreference = 'SilentlyContinue'
-        [array]$LogMessages = @()
-        Write-Host "Processing [$TargetFolder]."
-        $PSO = [PSCustomObject]@{
-            Message = "Processing [$TargetFolder]."
-            Status  = "Info"
-            Level   = "1"
-        }
-        $LogMessages += $PSO
+        $Global:ErrorActionPreference = 'SilentlyContinue'                
+
+        Add-ToLog -Message "Processing [$TargetFolder]." -logFilePath $ScriptLogFilePath -Display -Status "Info" -Level ($ParentLevel + 1)
 
         if (Test-Path $TargetFolder) {
             $Now = Get-Date
@@ -52,71 +48,62 @@ $Scriptblock = {
             try {
                 $Files = Get-ChildItem $TargetFolder -Include *.log, *.blg, *.etl -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -le $LastWrite }
                 $Files
-                foreach ($File in $Files) {
-                    Write-Host $File
-                    $FullFileName = $File.FullName  
-                    Write-Host "Deleting file [$FullFileName]."
-                    $PSO = [PSCustomObject]@{
-                        Message = "Deleting file [$FullFileName]."
-                        Status  = "Info"
-                        Level   = "2"
-                    }
-                    $LogMessages += $PSO
-                    
+                foreach ($File in $Files) {             
+                    Add-ToLog -Message "Deleting file [$FullFileName]." -logFilePath $ScriptLogFilePath -Display -Status "Info" -Level ($ParentLevel + 1)
                     Remove-Item $FullFileName -ErrorAction SilentlyContinue | Out-Null
                 }      
             }
             Catch{
-                $PSO = [PSCustomObject]@{
-                    Message = "Cant process file [$FullFileName] error [$_]. "
-                    Status  = "Error"
-                    Level   = "2"
-                }
-                $LogMessages += $PSO
+                Add-ToLog -Message "Cant process file [$FullFileName] error [$_]." -logFilePath $ScriptLogFilePath -Display -Status "Error" -Level ($ParentLevel + 1)
             }      
         }
-        Else {
-            Write-Host "The folder [$TargetFolder] doesn't exist! Check the folder path!" -ForegroundColor Red
-            $PSO = [PSCustomObject]@{
-                    Message = "The folder [$TargetFolder] doesn't exist! Check the folder path!"
-                    Status  = "Error"
-                    Level   = "2"
-            }
-            $LogMessages += $PSO
+        Else {            
+            Add-ToLog -Message "The folder [$TargetFolder] doesn't exist! Check the folder path!" -logFilePath $ScriptLogFilePath -Display -Status "Error" -Level ($ParentLevel + 1)
         }        
         
         $Global:ErrorActionPreference = $LastPref
         return $LogMessages
     }
 
-    trap {
-        write-host  $_ | select *        
+    $Res = [PSCustomObject]@{
+        LogBuffer          = @()
+        FreeDiskSpace      = 0
+        NewFreeDiskSpace   = 0
     }
 
-    [array] $LogMessages = @()
     $IISLogPath          = $Using:IISLogPath
     $ExchangeLoggingPath = $Using:ExchangeLoggingPath
     $ETLLoggingPath      = $Using:ETLLoggingPath
     $DiagLoggingPath     = $Using:DiagLoggingPath
     $DaysToSave          = $Using:DaysToSave
 
-    $LogMessages += (Remove-LogFiles -TargetFolder $IISLogPath -DaysToSave $DaysToSave )
-    $LogMessages += (Remove-LogFiles -TargetFolder $ExchangeLoggingPath -DaysToSave $DaysToSave )
-    $LogMessages += (Remove-LogFiles -TargetFolder $ETLLoggingPath -DaysToSave $DaysToSave )
-    $LogMessages += (Remove-LogFiles -TargetFolder $DiagLoggingPath -DaysToSave $DaysToSave )
+    $Res.FreeDiskSpace   = [math]::Round((Get-PSDrive ((Get-Item $IISLogPath).PSDrive.Name)).Free / 1gb, 2)
 
-    return $LogMessages
+    Remove-LogFiles -TargetFolder $IISLogPath -DaysToSave $DaysToSave 
+    Remove-LogFiles -TargetFolder $ExchangeLoggingPath -DaysToSave $DaysToSave 
+    Remove-LogFiles -TargetFolder $ETLLoggingPath -DaysToSave $DaysToSave
+    Remove-LogFiles -TargetFolder $DiagLoggingPath -DaysToSave $DaysToSave 
+
+    $Res.NewFreeDiskSpace = [math]::Round((Get-PSDrive ((Get-Item $IISLogPath).PSDrive.Name)).Free / 1gb, 2)
+    $Res.LogBuffer        = $Global:LogBuffer
+
+    return $Res
 }
 
 $User = Get-VarFromAESFile $Global:GlobalKey1 $Global:APP_SCRIPT_ADMIN_Login
 $Pass = Get-VarFromAESFile $Global:GlobalKey1 $Global:APP_SCRIPT_ADMIN_Pass
 if ($User -and $Pass) {
     $Credentials = New-Object System.Management.Automation.PSCredential -ArgumentList (Get-VarToString $User), $Pass
-    $LogMessages = Invoke-PSScriptBlock -Computer $ExchangeServerName -Credentials $Credentials -ScriptBlock $Scriptblock -TestComputer
+    $Res = Invoke-PSScriptBlock -Computer $ExchangeServerName -Credentials $Credentials -ScriptBlock $Scriptblock -TestComputer -ImportLocalModule "AlexkUtils"
 }
 
-foreach ($item in $LogMessages){
-    Add-ToLog -Message $item.Message -logFilePath $ScriptLogFilePath -display -status $item.Status -level ($ParentLevel + $item.Level)
+if ($Res.LogBuffer) {
+    foreach ($item in $Res.LogBuffer) {
+        Add-ToLog @item
+    }            
+}
+if (($Res.NewFreeDiskSpace) -and ($Res.FreeDiskSpace)) {
+    Add-ToLog -Message "Free disk [$($IISLogPath.Substring(0, 1)):] space changed on [$ExchangeServerName] from [$($Res.FreeDiskSpace) GB] to [$($Res.NewFreeDiskSpace) GB], difference [$([math]::round(($Res.NewFreeDiskSpace - $Res.FreeDiskSpace),2)) GB]" -logFilePath $ScriptLogFilePath -Display -Status "Info" -Level ($ParentLevel + 1)
 }
 
 ################################# Script end here ###################################
