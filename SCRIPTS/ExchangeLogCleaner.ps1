@@ -7,10 +7,16 @@
     .PARAMETER
     .EXAMPLE
 #>
+Param (
+    [Parameter( Mandatory = $false, Position = 0, HelpMessage = "Initialize global settings." )]
+    [bool] $InitGlobal = $true,
+    [Parameter( Mandatory = $false, Position = 1, HelpMessage = "Initialize local settings." )]
+    [bool] $InitLocal = $true   
+)
 
 $Global:ScriptInvocation = $MyInvocation
 $InitScript        = "C:\DATA\Projects\GlobalSettings\SCRIPTS\Init.ps1"
-. "$InitScript" -MyScriptRoot (Split-Path $PSCommandPath -Parent)
+. "$InitScript" -MyScriptRoot (Split-Path $PSCommandPath -Parent) -InitGlobal $InitGlobal -InitLocal $InitLocal
 if ($LastExitCode) { exit 1 }
 
 # Error trap
@@ -47,8 +53,8 @@ $Scriptblock = {
             $LastWrite = $Now.AddDays(-$DaysToSave)            
             try {
                 $Files = Get-ChildItem $TargetFolder -Include *.log, *.blg, *.etl -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -le $LastWrite }
-                $Files
-                foreach ($File in $Files) {             
+                foreach ($File in $Files) {  
+                    $FullFileName = $File.FullName           
                     Add-ToLog -Message "Deleting file [$FullFileName]." -logFilePath $ScriptLogFilePath -Display -Status "Info" -Level ($ParentLevel + 1)
                     Remove-Item $FullFileName -ErrorAction SilentlyContinue | Out-Null
                 }      
